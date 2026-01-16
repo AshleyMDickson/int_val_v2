@@ -61,7 +61,7 @@ sim_results$cum_mean <- cumsum(sim_results$cs_true) / seq_along(sim_results$cs_t
 
 png("calibration_convergence.png", width = 2000, height = 1500, res = 300)
 
-plot(x = 1:n_sims, y = sim_results$cum_mean, type = "l", ylim = c(0.8, 1.2),
+plot(x = 1:n_sims, y = sim_results$cum_mean, type = "l", ylim = c(0.8, 1.0),
     xlab = "No. of simulations", ylab = "Cumulative mean of True Slope",
     main = "Convergence to Expected Calibration Slope",
     las = 1)

@@ -105,14 +105,14 @@ truth_convergence_plot <- function(n) {
 
 # get Bootstrap corrected slope = apparent[= 1.0] - optimism[= 1.0 - mean_test_slope]
 boot_corr_slope <- function(df, B = 200) {
-    bs_slopes <- numeric(B)
+    bootstrap_slopes <- numeric(B)
     n <- nrow(df)
 
     for(i in 1:B) {
         index_resampled <- sample(n, replace = TRUE)
         bootstrap_df <- df[index_resampled,] # resampled df
 
-        bootstrap_model <- glm(outcome ~ ., family = "binomail", data = bootstrap_df)
+        bootstrap_model <- glm(outcome ~ ., family = "binomial", data = bootstrap_df)
         predictions_orig <- predict(bootstrap_model, newdata = df, type = "link") # get Bootstrap model preds on original data
         bootstrap_slopes[i] <- coef(glm(df$outcome ~ predictions_orig, family = "binomial"))[2] # individual Bootstrap cal. slope
     }
@@ -135,6 +135,37 @@ set.seed(1729)
 n_sims <- 200
 print("Simulation running...")
 
-result_matrix <- replicate((n_sims))
+result_matrix <- replicate(n_sims, single_comparison())
 simulation_data <- as.data.frame(t(result_matrix))
 print(simulation_data)
+
+png("calibration_comparison.png", width = 2400, height = 1200, res = 300)
+par(mfrow = c(1, 2), mar = c(5, 5, 4, 2)) # 1 row, 2 cols
+
+boxplot( #plot 1 - LHS
+    simulation_data,
+    main = "Comparison of Model Calibration Slopes \n(True Slope vs Bootstrap Estimate)",
+    ylab = "Calibratino Slope"
+    col = c("#69b3a2", "#404080"),
+    ylim = c(0.5, 1.5),
+    las = 1
+    )
+
+abline(h = 1.0, col = "grey", lty = 3) # apparent slope reference line
+points(1:2, colMeans(simulation_data), pch = 18, col = "red", cex = 2) # mean markers
+
+plot( # plot 2 - RHS
+    x = simulation_data$True, y = simulation_data$Boot, # check: is this the right way round?
+    pch = 16, col = rgb(0, 0, 0, 0.4),
+    xlim = c(0.6, 1.4), ylim = c(0.6, 1.4),
+    xlab = "True Slope (external)", ylab = "Bootstrap Est. Slope",
+    main = "Individual Agreement\n(1 point = 1 simulation run)",
+    las = 1)
+
+abline(0, 1, col = "red", lwd = 2) # perfect agreement
+abline(h = 1, v = 1, col = "grey", lty = 2)
+
+r_val <- cor(simulation_data$True, simulation_data$Boot)
+text(0.7, 1.3, paste0("Correlation = ", round(r_val, 2)), pos = 4, col = "blue")
+
+dev.off()

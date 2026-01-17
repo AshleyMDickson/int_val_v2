@@ -53,18 +53,36 @@ model_truth <- function() {
 #print(res)
 
 set.seed(1729)
-n_sims <- 100
+n_sims <- 10000
 raw_results <- replicate(n_sims, model_truth())
 sim_results <- data.frame(cs_true = raw_results)
+sequence_n <- seq_along(sim_results$cs_true)
 
-sim_results$cum_mean <- cumsum(sim_results$cs_true) / seq_along(sim_results$cs_true)
+sim_results$cum_mean <- cumsum(sim_results$cs_true) / sequence_n
+sim_results$cum_sd <- sapply(sequence_n, function(x) {
+    if (x == 1) return(0)
+    sd(sim_results$cs_true[1:x])
+})
+sim_results$cum_se <- sim_results$cum_sd/sqrt(sequence_n)
+sim_results$lower_ci <- sim_results$cum_mean - 1.96*sim_results$cum_se
+sim_results$upper_ci <- sim_results$cum_mean + 1.96*sim_results$cum_se
 
 png("calibration_convergence.png", width = 2000, height = 1500, res = 300)
 
-plot(x = 1:n_sims, y = sim_results$cum_mean, type = "l", ylim = c(0.8, 1.0),
+y_min <- min(sim_results$lower_ci)
+y_max <- max(sim_results$upper_ci)
+
+plot(x = 1:n_sims, y = sim_results$cum_mean, type = "n", ylim = c(0.8, 1.0), # type n = draw nothing yet
     xlab = "No. of simulations", ylab = "Cumulative mean of True Slope",
     main = "Convergence to Expected Calibration Slope",
     las = 1)
-abline(h = tail(sim_results$cum_mean, 1), col = "red", lty = 2)
 
+polygon(
+    x = c(sequence_n, rev(sequence_n)),
+    y = c(sim_results$lower_ci, rev(sim_results$upper_ci)),
+    col = rgb(0.8, 0.8, 0.8, 0.5),
+    border = NA
+)
+lines(x = sequence_n, y = sim_results$cum_mean, lwd = 2)
+abline(h = tail(sim_results$cum_mean, 1), col = "red", lty = 2)
 dev.off()

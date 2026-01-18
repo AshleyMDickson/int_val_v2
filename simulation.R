@@ -10,7 +10,7 @@ library(doParallel)
 # sample_size <- sampsizedev$sim # tried up to 10,240 sample size
 sample_size <- 631
 beta <- c(0.45, 0.40, -0.35, 0.30, -0.25, 1.20, 0.15, 0.10, -1.8, 0.05)
-set.seed(1729)
+#set.seed(1729)
 
 get_alpha <- function(target_prev, beta, k) {
     N <- 100000
@@ -109,6 +109,7 @@ truth_convergence_plot <- function(n) {
 #truth_convergence_plot(2000)
 
 # get Bootstrap corrected slope = apparent[= 1.0] - optimism[= 1.0 - mean_test_slope]
+# ? wrong ?
 boot_corr_slope <- function(df, B = 200) {
     bootstrap_slopes <- numeric(B)
     n <- nrow(df)
@@ -124,6 +125,50 @@ boot_corr_slope <- function(df, B = 200) {
     return(mean(bootstrap_slopes))
 }
 
+boot_corr_slope_v2 <- function(df, B = 200) {
+    model_orig <- glm(outcome ~ ., family = "binomial", data = df) # original model
+    lp_orig <- predict(model_orig, newdata = df, type = "link")
+    app_cs_orig <- unname(coef(glm(df$outcome ~ lp_orig, family = "binomial"))[2]) # apparent slope
+
+    n <- nrow(df)
+
+    app_orig_vec <- rep(app_cs_orig, B) # same value, B repeats
+    app_boot_vec <- numeric(B)
+    test_boot_vec <- numeric(B)
+    optimism_vec <- numeric(B)
+
+    for (i in 1:B) {
+        index_resampled <- sample(n, replace = TRUE)
+        bootstrap_df <- df[index_resampled,] # resamnpled df
+        model_bootstrap <- glm(outcome ~ ., family = "binomial", data = bootstrap_df)
+        lp_boot_in_boot <- predict(model_bootstrap, newdata = bootstrap_df, type = "link")
+        app_cs_bootstrap <- unname(coef(glm(outcome ~ lp_boot_in_boot, family = "binomial", data = bootstrap_df))[2]) # apparenbt bootstrap cs
+
+        lp_boot_in_orig <- predict(model_bootstrap, newdata = df, type = "link")
+        test_cs_boot <- unname(coef(glm(outcome ~ lp_boot_in_orig, family = "binomial", data = df))[2])
+
+        app_boot_vec[i] <- app_cs_bootstrap
+        test_boot_vec[i] <- test_cs_boot
+        optimism_vec[i] <- app_cs_bootstrap - test_cs_boot
+    }
+
+    steps <- data.frame(
+        app_slope_orig = app_orig_vec,
+        app_slope_boot = app_boot_vec,
+        test_slope_boot = test_boot_vec
+    )
+
+    cs_corrected <- app_cs_orig - mean(optimism_vec)
+    
+    list(
+        corrected_slope = cs_corrected, # single value
+        apparent_slope_original = app_cs_orig,
+        mean_optimism = mean(optimism_vec),
+        steps = steps,
+        optimism = optimism_vec
+    )
+}
+
 single_comparison <- function() {
     df <- dgp(sample_size, length(beta)) # training data
     # model <- glm(outcome ~ ., family = "binomial", data = df) # main model
@@ -132,9 +177,25 @@ single_comparison <- function() {
     # ext_lp <- predict(model, newdata = ext_data, type = "link")
     # cs_true <- unname(coef(glm(ext_data$outcome ~ ext_lp, family = "binomial"))[2]) 
     cs_true <- model_truth(df, test_data) # true cal slope
-    cs_boot <- boot_corr_slope(df = df, B = 200) # optimism-corrected slope
-    return(c(True = cs_true, Boot = cs_boot))
+    boot <- boot_corr_slope_v2(df = df, B = 200) # optimism-corrected slope
+
+    cs_app <- boot$apparent_slope_original
+    opt_boot <- boot$mean_optimism
+    cs_bootcorr <- boot$corrected_slope
+
+    opt_true <- cs_app - cs_true 
+
+    return(
+        c(
+            True = cs_true, 
+            App = cs_app,
+            Boot = cs_bootcorr,
+            OptTrue = opt_true,
+            OptBoot = opt_boot
+        )
+    )
 }
+#print(single_comparison())
 
 simulation <- function(n) { # n = number of simualtion repetitions
     cores <- detectCores() - 1
@@ -147,7 +208,7 @@ simulation <- function(n) { # n = number of simualtion repetitions
         .combine = rbind,
         .packages = c("rms", "pROC"),
         .export = c("single_comparison", "dgp", "model_truth",
-        "boot_corr_slope", "alpha", "beta", "sample_size", "test_data")) %dopar% {
+        "boot_corr_slope_v2", "alpha", "beta", "sample_size", "test_data")) %dopar% {
             single_comparison()
         }
 
@@ -156,9 +217,57 @@ simulation <- function(n) { # n = number of simualtion repetitions
     return(as.data.frame(simulation_data))
 }
 
+res <- simulation(500)
+#str(res)
+#summary(res)
+
+summary_stats <- c(
+    n = nrow(res),
+
+    mean_true = mean(res$True),
+    sd_true   = sd(res$True),
+
+    mean_app  = mean(res$App),
+    sd_app    = sd(res$App),
+
+    mean_boot = mean(res$Boot),
+    sd_boot   = sd(res$Boot),
+
+    cor_true_boot = cor(res$True, res$Boot),
+
+    mean_opt_true = mean(res$OptTrue),
+    sd_opt_true   = sd(res$OptTrue),
+
+    mean_opt_boot = mean(res$OptBoot),
+    sd_opt_boot   = sd(res$OptBoot),
+
+    cor_opt_true_opt_boot = cor(res$OptTrue, res$OptBoot),
+
+    range = range(res$Boot),
+    unique_vals = length(unique(round(res$Boot, 3)))
+)
+
+print(summary_stats)
+
+png("diag1.png")
+plot(res$True, res$Boot, pch=16, col=rgb(0,0,0,0.3))
+abline(0,1,lwd=2)
+dev.off()
+
+png("diag2.png")
+plot(res$OptTrue, res$OptBoot, pch=16, col=rgb(0,0,0,0.3))
+abline(0,1,lwd=2)
+dev.off()
+
+
+
+
+
+
+
 boxplot_correlation <- function() {
     sim_results <- simulation(200)
-    png("calibration_comparison.png", width = 2400, height = 1200, res = 300)
+    png("calibration_comparison_v2.png", width = 2400, height = 1200, res = 300)
     par(mfrow = c(1, 2), mar = c(5, 5, 4, 2)) # 1 row, 2 cols
 
     boxplot( #plot 1 - LHS
@@ -200,12 +309,11 @@ correlation_dist <- function(n) {
         print(paste0("Finished batch ", i))
     }
 
-    png("correlation_distribution.png")
+    png("correlation_distribution_v2.png", width = 2400, height = 1800, res = 300)
     hist(
         r_vals,
         main = "Distribution of True-Boot Correlations", xlab = "Correlation Coefficient"
-        width = 2400, height = 1800, res = 300
     )
     dev.off()
 }
-correlation_dist(100)
+#correlation_dist(100)

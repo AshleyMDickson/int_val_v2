@@ -2,13 +2,15 @@
 library(pROC)
 library(rms)
 library(samplesizedev)
+library(foreach)
+library(doParallel)
 
 # # Set-up parameters and such
 # sampsizedev <- suppressWarnings(samplesizedev(outcome = "Binary", S = 0.9, phi = 0.15, c = 0.85, p = 10))
 # sample_size <- sampsizedev$sim # tried up to 10,240 sample size
 sample_size <- 631
 beta <- c(0.45, 0.40, -0.35, 0.30, -0.25, 1.20, 0.15, 0.10, -1.8, 0.05)
-#set.seed(1729)
+set.seed(1729)
 
 get_alpha <- function(target_prev, beta, k) {
     N <- 100000
@@ -30,16 +32,18 @@ dgp <- function(n, k) {
 }
 
 # true model performance - Cal Slope only for now
-model_truth <- function(df) {
+test_data <- dgp(200000, length(beta))
+
+model_truth <- function(df, test_data) {
     #df <- dgp(sample_size, length(beta))
     model <- glm(outcome ~ ., family = "binomial", data = df)
     ## check apparent slope = 1 to ensure correct calculation
     #pred_lp <- predict(model, newdata = df, type = "link")
     #cs_naive <- unname(coef(glm(df$outcome ~ pred_lp, family = "binomial"))[2])
 
-    new_data <- dgp(200000, length(beta))
-    ext_lp <- predict(model, newdata = new_data, "link")
-    cs_true <- unname(coef(glm(new_data$outcome ~ ext_lp, family = "binomial"))[2])
+    #new_data <- dgp(200000, length(beta)) # created externally now for speed
+    ext_lp <- predict(model, newdata = test_data, "link")
+    cs_true <- unname(coef(glm(test_data$outcome ~ ext_lp, family = "binomial"))[2])
     
     #auc_true <- suppressMessages(auc(response = new_data$outcome, predictor = ext_preds))
     #brier_true <- mean((ext_preds - new_data$outcome)^2)
@@ -127,20 +131,29 @@ single_comparison <- function() {
     # ext_data <- dgp(100000, length(beta)) # large test dataset
     # ext_lp <- predict(model, newdata = ext_data, type = "link")
     # cs_true <- unname(coef(glm(ext_data$outcome ~ ext_lp, family = "binomial"))[2]) 
-    cs_true <- model_truth(df) # true cal slope
+    cs_true <- model_truth(df, test_data) # true cal slope
     cs_boot <- boot_corr_slope(df = df, B = 200) # optimism-corrected slope
     return(c(True = cs_true, Boot = cs_boot))
 }
 
 simulation <- function(n) { # n = number of simualtion repetitions
-    set.seed(1729)
-    n_sims <- n
-    print("Simulation running...")
+    cores <- detectCores() - 1
+    cluster <- makeCluster(cores)
+    registerDoParallel(cluster)
+    print(paste0("Running simulation on ", cores, " cores..."))
 
-    result_matrix <- replicate(n_sims, single_comparison())
-    simulation_data <- as.data.frame(t(result_matrix))
+    simulation_data <- foreach(
+        i = 1:n,
+        .combine = rbind,
+        .packages = c("rms", "pROC"),
+        .export = c("single_comparison", "dgp", "model_truth",
+        "boot_corr_slope", "alpha", "beta", "sample_size", "test_data")) %dopar% {
+            single_comparison()
+        }
+
+    stopCluster(cluster)
     print("Simulation complete.")
-    return(simulation_data)
+    return(as.data.frame(simulation_data))
 }
 
 boxplot_correlation <- function() {
@@ -178,3 +191,22 @@ boxplot_correlation <- function() {
     print("Boxplot and correlation saved.")
     }
 #boxplot_correlation()
+
+large_simulation <- simulation(1000)
+test_result <- cor.test(large_simulation$True, large_simulation$Boot)
+print(test_result)
+
+r_vals <- numeric(50)
+
+for (i in 1:50) {
+    res <- simulation(100)
+    r_vals[i] <- cor(res$True, res$Boot)
+    print(paste0("Finished batch", i))
+}
+
+png("correlation_distribution.png")
+hist(
+    r_vals,
+    main = "Dsitribution of Correlations", xlab = "Correlation Coefficient"
+)
+dev.off()

@@ -5,13 +5,13 @@ library(samplesizedev)
 
 # # Set-up parameters and such
 # sampsizedev <- suppressWarnings(samplesizedev(outcome = "Binary", S = 0.9, phi = 0.15, c = 0.85, p = 10))
-# sample_size <- sampsizedev$sim
+# sample_size <- sampsizedev$sim # tried up to 10,240 sample size
 sample_size <- 631
 beta <- c(0.45, 0.40, -0.35, 0.30, -0.25, 1.20, 0.15, 0.10, -1.8, 0.05)
 #set.seed(1729)
 
 get_alpha <- function(target_prev, beta, k) {
-    N <- 1000000
+    N <- 100000
     predictors <- matrix(rnorm(N*k), nrow = N, ncol = k)
     lp_fixed <- predictors %*% beta
     root <- function(a) mean(plogis(a + lp_fixed)) - target_prev
@@ -19,7 +19,7 @@ get_alpha <- function(target_prev, beta, k) {
     return(alpha)
 }
 
-alpha <- get_alpha(0.15, beta, 10)
+alpha <- get_alpha(0.15, beta, length(beta))
 
 dgp <- function(n, k) {
     predictors <- matrix(rnorm(n*k), nrow = n, ncol = k)
@@ -30,10 +30,10 @@ dgp <- function(n, k) {
 }
 
 # true model performance - Cal Slope only for now
-model_truth <- function() {
-    df <- dgp(sample_size, length(beta))
+model_truth <- function(df) {
+    #df <- dgp(sample_size, length(beta))
     model <- glm(outcome ~ ., family = "binomial", data = df)
-    ## check naive slope = 1 to ensure correct calculation
+    ## check apparent slope = 1 to ensure correct calculation
     #pred_lp <- predict(model, newdata = df, type = "link")
     #cs_naive <- unname(coef(glm(df$outcome ~ pred_lp, family = "binomial"))[2])
 
@@ -58,7 +58,8 @@ truth_convergence_plot <- function(n) {
     pb <- txtProgressBar(min = 0, max = n_sims, style = 3) # progress bar
     raw_results <- numeric(n_sims) # loop it
     for(i in 1:n_sims) {
-        raw_results[i] <- model_truth()
+        df <- dgp(sample_size, length(beta))
+        raw_results[i] <- model_truth(df)
         setTxtProgressBar(pb, i)
     }
     close(pb)
@@ -99,7 +100,7 @@ truth_convergence_plot <- function(n) {
     lines(x = sequence_n, y = sim_results$cum_mean, lwd = 2)
     abline(h = tail(sim_results$cum_mean, 1), col = "red", lty = 2)
     dev.off()
-    print("Plot saved.")
+    print("Convergence plot saved.")
 }
 #truth_convergence_plot(2000)
 
@@ -121,51 +122,59 @@ boot_corr_slope <- function(df, B = 200) {
 
 single_comparison <- function() {
     df <- dgp(sample_size, length(beta)) # training data
-    model <- glm(outcome ~ ., family = "binomial", data = df) # main model
+    # model <- glm(outcome ~ ., family = "binomial", data = df) # main model
     
-    ext_data <- dgp(50000, length(beta)) # large test dataset
-    ext_lp <- predict(model, newdata = ext_data, type = "link")
-    cs_true <- unname(coef(glm(ext_data$outcome ~ ext_lp, family = "binomial"))[2]) # true cal slope
-
-    cs_boot <- boot_corr_slope(df = df, B = 100) # optimism-corrected slope
+    # ext_data <- dgp(100000, length(beta)) # large test dataset
+    # ext_lp <- predict(model, newdata = ext_data, type = "link")
+    # cs_true <- unname(coef(glm(ext_data$outcome ~ ext_lp, family = "binomial"))[2]) 
+    cs_true <- model_truth(df) # true cal slope
+    cs_boot <- boot_corr_slope(df = df, B = 200) # optimism-corrected slope
     return(c(True = cs_true, Boot = cs_boot))
 }
 
-set.seed(1729)
-n_sims <- 200
-print("Simulation running...")
+simulation <- function(n) { # n = number of simualtion repetitions
+    set.seed(1729)
+    n_sims <- n
+    print("Simulation running...")
 
-result_matrix <- replicate(n_sims, single_comparison())
-simulation_data <- as.data.frame(t(result_matrix))
-print(simulation_data)
+    result_matrix <- replicate(n_sims, single_comparison())
+    simulation_data <- as.data.frame(t(result_matrix))
+    print("Simulation complete.")
+    return(simulation_data)
+}
 
-png("calibration_comparison.png", width = 2400, height = 1200, res = 300)
-par(mfrow = c(1, 2), mar = c(5, 5, 4, 2)) # 1 row, 2 cols
+boxplot_correlation <- function() {
+    sim_results <- simulation(200)
+    png("calibration_comparison.png", width = 2400, height = 1200, res = 300)
+    par(mfrow = c(1, 2), mar = c(5, 5, 4, 2)) # 1 row, 2 cols
 
-boxplot( #plot 1 - LHS
-    simulation_data,
-    main = "Comparison of Model Calibration Slopes \n(True Slope vs Bootstrap Estimate)",
-    ylab = "Calibratino Slope"
-    col = c("#69b3a2", "#404080"),
-    ylim = c(0.5, 1.5),
-    las = 1
-    )
+    boxplot( #plot 1 - LHS
+        sim_results,
+        main = "Comparison of Model Calibration Slopes \n(True Slope vs Bootstrap Estimate)",
+        ylab = "Calibration Slope",
+        col = c("#69b3a2", "#404080"),
+        ylim = c(0.6, 1.4),
+        las = 1
+        )
 
-abline(h = 1.0, col = "grey", lty = 3) # apparent slope reference line
-points(1:2, colMeans(simulation_data), pch = 18, col = "red", cex = 2) # mean markers
+    abline(h = 1.0, col = "grey", lty = 3) # apparent slope reference line
+    points(1:2, colMeans(sim_results), pch = 18, col = "#f3a1a1", cex = 2) # mean markers
 
-plot( # plot 2 - RHS
-    x = simulation_data$True, y = simulation_data$Boot, # check: is this the right way round?
-    pch = 16, col = rgb(0, 0, 0, 0.4),
-    xlim = c(0.6, 1.4), ylim = c(0.6, 1.4),
-    xlab = "True Slope (external)", ylab = "Bootstrap Est. Slope",
-    main = "Individual Agreement\n(1 point = 1 simulation run)",
-    las = 1)
+    plot( # plot 2 - RHS
+        x = sim_results$True, y = sim_results$Boot, # check: is this the right way round?
+        pch = 16, col = rgb(0, 0, 0, 0.4),
+        xlim = c(0.6, 1.4), ylim = c(0.6, 1.4),
+        xlab = "True Slope (external)", ylab = "Bootstrap Est. Slope",
+        main = "Individual Agreement\n(1 point = 1 simulation run)",
+        las = 1)
 
-abline(0, 1, col = "red", lwd = 2) # perfect agreement
-abline(h = 1, v = 1, col = "grey", lty = 2)
+    abline(0, 1, col = "#a8f0e3", lwd = 2) # perfect agreement
+    abline(h = 1, v = 1, col = "grey", lty = 2)
 
-r_val <- cor(simulation_data$True, simulation_data$Boot)
-text(0.7, 1.3, paste0("Correlation = ", round(r_val, 2)), pos = 4, col = "blue")
+    r_val <- cor(sim_results$True, sim_results$Boot)
+    text(0.7, 1.3, paste0("Correlation = ", round(r_val, 2)), pos = 4, col = "grey")
 
-dev.off()
+    dev.off()
+    print("Boxplot and correlation saved.")
+    }
+#boxplot_correlation()

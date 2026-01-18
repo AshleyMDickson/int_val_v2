@@ -192,21 +192,20 @@ boxplot_correlation <- function() {
     }
 #boxplot_correlation()
 
-large_simulation <- simulation(1000)
-test_result <- cor.test(large_simulation$True, large_simulation$Boot)
-print(test_result)
+correlation_dist <- function(n) {
+    r_vals <- numeric(n)
+    for (i in 1:n) {
+        res <- simulation(n)
+        r_vals[i] <- cor(res$True, res$Boot)
+        print(paste0("Finished batch ", i))
+    }
 
-r_vals <- numeric(50)
-
-for (i in 1:50) {
-    res <- simulation(100)
-    r_vals[i] <- cor(res$True, res$Boot)
-    print(paste0("Finished batch", i))
+    png("correlation_distribution.png")
+    hist(
+        r_vals,
+        main = "Distribution of True-Boot Correlations", xlab = "Correlation Coefficient"
+        width = 2400, height = 1800, res = 300
+    )
+    dev.off()
 }
-
-png("correlation_distribution.png")
-hist(
-    r_vals,
-    main = "Dsitribution of Correlations", xlab = "Correlation Coefficient"
-)
-dev.off()
+correlation_dist(100)

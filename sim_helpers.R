@@ -152,3 +152,45 @@ correlation_dist <- function(n) {
     
 }
 #correlation_dist(10)
+
+# This needs to be wrapped into 
+# an appropriately configured functions
+
+summary_stats <- c(
+    n = nrow(res),
+
+    mean_true = mean(res$True),
+    sd_true   = sd(res$True),
+
+    mean_app  = mean(res$App),
+    sd_app    = sd(res$App),
+
+    mean_boot = mean(res$Boot),
+    sd_boot   = sd(res$Boot),
+
+    cor_true_boot = cor(res$True, res$Boot),
+
+    mean_opt_true = mean(res$OptTrue),
+    sd_opt_true   = sd(res$OptTrue),
+
+    mean_opt_boot = mean(res$OptBoot),
+    sd_opt_boot   = sd(res$OptBoot),
+
+    cor_opt_true_opt_boot = cor(res$OptTrue, res$OptBoot),
+
+    range = range(res$Boot),
+    unique_vals = length(unique(round(res$Boot, 3)))
+)
+
+#print(summary_stats)
+
+# png("diag1.png")
+# plot(res$True, res$Boot, pch=16, col=rgb(0,0,0,0.3))
+# abline(0,1,lwd=2)
+# dev.off()
+
+# png("diag2.png")
+# plot(res$OptTrue, res$OptBoot, pch=16, col=rgb(0,0,0,0.3))
+# abline(0,1,lwd=2)
+# dev.off()
+

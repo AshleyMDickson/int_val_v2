@@ -50,50 +50,60 @@ print(paste0("Marginal prevalence: ", mean(test_data$df$outcome)))
 sample_size <- 1036 # calculated from samplesizedev, with 10 predictors, phi = 0.15, AUC = 0.75, and shrinkage = 0.9. This is the sample size needed to get a shrinkage of 0.9 in the final model, which is what we want to use for this simulation. We can also try with a different sample sizes.
 print(paste0("Required sample size = ", sample_size))
 
-# True model performance - Cal Slope only for now
+# Helper function to calculate all performance metrics
+calc_metrics <- function(outcome, lp) {
+  prob <- plogis(lp)
+  # Calibration slope
+  cs <- unname(coef(glm(outcome ~ lp, family = "binomial"))[2])
+  # AUC
+  auc_val <- as.numeric(auc(outcome, prob, quiet = TRUE))
+  # Brier Score
+  brier <- mean((outcome - prob)^2)
+  # MAPE
+  mape <- mean(abs(outcome - prob))
+  
+  return(c(cs = cs, auc = auc_val, brier = brier, mape = mape))
+}
+
+# True model performance
 # test_data must be supplied as a dataframe; note that dgp() returns a list with df and auc_true, so we need to use test_data$df when calling this function
 model_truth <- function(df, test_data) {
   model <- glm(outcome ~ ., family = "binomial", data = df)
   ext_lp <- predict(model, newdata = test_data, type = "link") # test_data drawn once outside this function
-  cs_true <- unname(coef(glm(test_data$outcome ~ ext_lp, family = "binomial"))[2])
-  #auc_true <- suppressMessages(auc(response = test_data$df$outcome, predictor = ext_lp))
-  #brier_true <- mean((ext_lp - test_data$df$outcome)^2)
-  #mape_true <- mean(abs(ext_lp - test_data$df$outcome))
-  return(cs_true)
+  calc_metrics(test_data$outcome, ext_lp)
 }
-## Trial run to make sure it works
-# dev_data <- dgp(sample_size, k, return_auc = FALSE)
-# apparent_slope <- model_truth(df=dev_data, test_data = dev_data)
-# print(paste0("Apparent calibration slope = ", apparent_slope))
-# print(paste0("True calibration slope = ", model_truth(df=dev_data, test_data = test_data$df)))
 
-# Get Bootstrap corrected slope = apparent[= 1.0] - optimism[= 1.0 - mean_test_slope]
-# Here, the goal is to try a couple of things: (1) try getting predictions not in original data but in another bootstrap resample, and (2) double bootstrap.
-# What does double bootstrap mean?
-# Oh and also, Ambler's empirical-Bayes thing. What does it mean?!?!?
-
-boot_corr_slope <- function(df, B = 200) {
-  bootstrap_slopes <- numeric(B)
+boot_corr_metrics <- function(df, B = 200) {
   n <- nrow(df)
+  # Apparent performance
+  model_app <- glm(outcome ~ ., family = "binomial", data = df)
+  lp_app <- predict(model_app, newdata = df, type = "link")
+  perf_app <- calc_metrics(df$outcome, lp_app)
+  
+  optimism <- matrix(NA, nrow = B, ncol = length(perf_app))
+  colnames(optimism) <- names(perf_app)
   
   for(i in 1:B) {
-    index_resampled <- sample(n, replace = TRUE)
-    bootstrap_df <- df[index_resampled,] # resampled df
-    bootstrap_model <- glm(outcome ~ ., family = "binomial", data = bootstrap_df)
-    # what about test in orig data less bootstrap sampled records? is this 0.632????
-    #oob_indices <- which(!(1:n %in% index_resampled))
-    #df_not_bootstrap <- df[sample(oob_indices, size = n, replace = TRUE), ] # original df, less resampled records
-    #predictions_not_boot <- predict(bootstrap_model, newdata = df_not_bootstrap, type = "link")
-    predictions_orig <- predict(bootstrap_model, newdata = df, type = "link") # get Bootstrap model preds on original data
-    bootstrap_slopes[i] <- coef(glm(df$outcome ~ predictions_orig, family = "binomial"))[2] # individual Bootstrap cal. slope
+    idx <- sample(n, replace = TRUE)
+    df_boot <- df[idx, ]
+    model_boot <- glm(outcome ~ ., family = "binomial", data = df_boot)
+    
+    # Performance on bootstrap sample
+    lp_boot_boot <- predict(model_boot, newdata = df_boot, type = "link")
+    perf_boot_boot <- calc_metrics(df_boot$outcome, lp_boot_boot)
+    
+    # Performance on original sample
+    lp_boot_orig <- predict(model_boot, newdata = df, type = "link")
+    perf_boot_orig <- calc_metrics(df$outcome, lp_boot_orig)
+    
+    optimism[i, ] <- perf_boot_boot - perf_boot_orig
   }
-  return(mean(bootstrap_slopes)) 
-  # what about trying a random sample of the 200 bootstrap slopes? or max? or min? median? something NOT mean!
-  #return(sample(bootstrap_slopes, 1)) # random sample of bootstrap slopes
+  
+  perf_corr <- perf_app - colMeans(optimism)
+  return(perf_corr)
 }
-#print(boot_corr_slope(dev_data, B = 200))
 
-sample_split_slope <- function(df, prop_train = 0.5) {
+sample_split_metrics <- function(df, prop_train = 0.5) {
   n <- nrow(df)
   idx <- sample.int(n)
   n_train <- floor(prop_train * n)
@@ -105,14 +115,10 @@ sample_split_slope <- function(df, prop_train = 0.5) {
   
   model <- glm(outcome ~ ., family = "binomial", data = train_df)
   lp_test <- predict(model, newdata = test_df, type = "link")
-  unname(coef(glm(test_df$outcome ~ lp_test, family = "binomial"))[2])
+  calc_metrics(test_df$outcome, lp_test)
 }
-#print(sample_split_slope(dev_data, prop_train = 0.5))
-#x <- numeric(1000)
-#for (i in 1:1000) {x[i] <- sample_split_slope(dev_data, prop_train = 0.8)}
-#hist(x, breaks = 20)
 
-cv_slope <- function(df, K = 10) {
+cv_metrics <- function(df, K = 10) {
   n <- nrow(df)
   folds <- sample(rep(1:K, length.out = n))
   lp_oof <- rep(NA_real_, n) # pooled out of fold linear preds
@@ -123,28 +129,28 @@ cv_slope <- function(df, K = 10) {
     model <- glm(outcome ~ ., family = "binomial", data = train_df)
     lp_oof[folds == kfold] <- predict(model, newdata = test_df, type = "link")
   }
-  unname(coef(glm(df$outcome ~ lp_oof, family = "binomial"))[2])
+  calc_metrics(df$outcome, lp_oof)
 }
-#y <- numeric(1000)
-#for (i in 1:1000) {y[i] <- cv_slope(dev_data, K = 10)}
-#hist(y, breaks = 20)
-
-# See MP's code for "cv_slope_try" for an oversampled CV slope calculation. 
-# This enables model to be trained on a dataset of full size.
 
 single_comparison <- function(sample_size, i) {
   set.seed(i)
   df <- dgp(sample_size, k)
   test_df <- dgp(100000, k)
   
-  cs_true  <- model_truth(df, test_df)
-  cs_boot  <- boot_corr_slope(df, B = 200)
-  cs_split <- sample_split_slope(df, prop_train = 0.5)
-  cs_cv    <- cv_slope(df, K = 10)
+  perf_true  <- model_truth(df, test_df)
+  perf_boot  <- boot_corr_metrics(df, B = 200)
+  perf_split <- sample_split_metrics(df, prop_train = 0.5)
+  perf_cv    <- cv_metrics(df, K = 10)
 
-  c(cs_true = cs_true, cs_boot = cs_boot, cs_split = cs_split, cs_cv = cs_cv)
+  # Combine and name
+  res <- c(
+    setNames(perf_true, paste0(names(perf_true), "_true")),
+    setNames(perf_boot, paste0(names(perf_boot), "_boot")),
+    setNames(perf_split, paste0(names(perf_split), "_split")),
+    setNames(perf_cv, paste0(names(perf_cv), "_cv"))
+  )
+  return(res)
 }
-#print(single_comparison(sample_size, 1))
 
 simulation <- function(sample_size, nsim) { # n = number of simualtion repetitions
   cores <- detectCores() - 1
@@ -156,15 +162,14 @@ simulation <- function(sample_size, nsim) { # n = number of simualtion repetitio
     i = 1:nsim,
     .combine = rbind,
     .packages = c("rms", "pROC"),
-    .export = c("single_comparison", "dgp", "model_truth", "cv_slope", 
-    "sample_split_slope",
-                "boot_corr_slope", "alpha", "beta", "k")
+    .export = c("single_comparison", "dgp", "model_truth", "cv_metrics", 
+                "sample_split_metrics", "boot_corr_metrics", "calc_metrics",
+                "alpha", "beta", "k")
   ) %dopar% {
     single_comparison(sample_size = sample_size, i = i)
   }
   
   stopCluster(cluster)
-  #simulation_data <- t(replicate(n, single_comparison()))
   print("Simulation complete.")
   return(as.data.frame(simulation_data))
 }
@@ -179,125 +184,61 @@ res <- NULL
 for (n in sample_sizes) {
   res <- rbind(res, cbind(simulation(n, nsim), n))
 }
-#res
 
+metrics <- c("cs", "auc", "brier", "mape")
+metric_labels <- c(cs = "Calibration Slope", auc = "AUC", brier = "Brier Score", mape = "MAPE")
 
-cors <- res %>%
-  group_by(n) %>%
-  summarise(
-    cor_val1 = cor(cs_boot, cs_true, method = "spearman"),
-    cor_val2 = cor(cs_cv, cs_true, method = "spearman"),
-    cor_val3 = cor(cs_split, cs_true, method = "spearman")
-      )
-
-cors_long <- cors %>%
-  pivot_longer(
-    cols = starts_with("cor_val"),
-    names_to = "method",
-    values_to = "cor_val"
-  ) %>%
-  mutate(
-    # Match the column names in res_long
-    method = case_when(
-      method == "cor_val1" ~ "cs_boot",
-      method == "cor_val2" ~ "cs_cv",
-      method == "cor_val3" ~ "cs_split"
+for (m in metrics) {
+  # Scatter Plot
+  res_m_long <- res %>%
+    select(n, starts_with(m)) %>%
+    rename_with(~str_remove(., paste0(m, "_")), starts_with(m)) %>%
+    pivot_longer(cols = c(boot, split, cv), names_to = "method", values_to = "internal")
+    
+  cors_m <- res_m_long %>%
+    group_by(n, method) %>%
+    summarise(cor_val = cor(internal, true, method = "spearman"), .groups = "drop")
+    
+  scatter <- ggplot(res_m_long, aes(x = internal, y = true, color = method)) +
+    geom_point(alpha = 0.6) +
+    facet_wrap(~ n + method, scales = "free") +
+    theme_minimal() +
+    geom_text(
+      data = cors_m,
+      aes(x = -Inf, y = Inf, label = paste0("r = ", round(cor_val, 3))),
+      hjust = -0.1, vjust = 1.2, inherit.aes = FALSE, size = 4
+    ) +
+    labs(
+      title = paste0(metric_labels[m], " correlation (internal vs external 'true')"),
+      subtitle = paste0("Sims = ", nsim),
+      x = paste0("Internal ", metric_labels[m], " estimate"),
+      y = paste0("External 'true' ", metric_labels[m])
     )
-  )
+    
+  ggsave(paste0("scatter_", m, ".png"), scatter, width = 10, height = 8)
+  
+  # Box Plot
+  res_m_box <- res %>%
+    select(n, starts_with(m)) %>%
+    rename_with(~str_remove(., paste0(m, "_")), starts_with(m)) %>%
+    pivot_longer(cols = -n, names_to = "method", values_to = "val")
+    
+  box <- ggplot(res_m_box, aes(x = method, y = val, fill = method)) +
+    geom_boxplot(alpha = 0.7) +
+    theme_minimal() + 
+    facet_wrap(~n) +
+    labs(
+      title = paste0("Comparison of ", metric_labels[m]),
+      x = "",
+      y = metric_labels[m]
+    ) +
+    theme(legend.position = "none")
+    
+  # Add horizontal line for reference if applicable
+  if (m == "cs") box <- box + geom_hline(yintercept = 0.9, color = "blue", linetype = "dotted")
+  if (m == "auc") box <- box + geom_hline(yintercept = auc_val, color = "blue", linetype = "dotted")
+  
+  ggsave(paste0("box_", m, ".png"), box, width = 10, height = 8)
+}
 
-res_long <- res %>%
-  pivot_longer(cols = c(cs_boot, cs_split, cs_cv),
-               names_to = "method", values_to = "cs_internal")
-
-
-scatter <- ggplot(res_long, aes(x = cs_internal, y = cs_true, color = method)) +
-  geom_point(alpha = 0.6) +
-  facet_wrap(~ n + method, scales = "free_x") +
-  theme_minimal() +
-  coord_cartesian(xlim = c(0.4, 1.6),
-                  ylim = c(0.4, 1.6)) +
-  geom_text(
-    data = cors_long,
-    aes(
-      x = -Inf,
-      y = Inf,
-      label = paste0("r = ", round(cor_val, 3))
-    ),
-    hjust = -0.1,
-    vjust = 1.2,
-    inherit.aes = FALSE,
-    size = 4
-  )+
-  labs(
-    title = "Calibration slope correlation (internal vs external 'true')",
-    subtitle = paste0(
-      "Sims = ", nsim
-    ),
-    x = "Internal calibration slope estimate",
-    y = "External 'true' calibration slope"
-  )
-
-scatter
-
-ggsave("scatter.png")
-
-
-
-# Boxplot 
-# Reshape to long format
-res_box <- res %>%
-  pivot_longer(
-    cols = c(cs_true, cs_boot, cs_cv, cs_split),
-    names_to = "method",
-    values_to = "cal_slope"
-  )
-
-box <- ggplot(res_box, aes(x = method, y = cal_slope, fill = method)) +
-  geom_boxplot(alpha = 0.7) +
-  theme_minimal() + facet_wrap(~n)+
-  labs(
-    title = "Comparison of Calibration Slopes",
-    x = "",
-    y = "Calibration Slope"
-  ) +
-  theme(legend.position = "none") +  # Horizontal mean line
-  geom_hline(
-    aes(yintercept =0.9),
-    color = "blue",
-    linetype = "dotted",
-    linewidth = 1
-  ) 
-
-box
-
-ggsave("box.png")
-
-# cors <- c(
-#   boot  = cor(res$cs_boot,  res$cs_true),
-#   split = cor(res$cs_split, res$cs_true),
-#   cv    = cor(res$cs_cv,    res$cs_true)
-# )
-# print(cors)
-
-# res_long <- res %>%
-#   pivot_longer(cols = c(cs_boot, cs_split, cs_cv),
-#                names_to = "method", values_to = "cs_internal")
-
-# plt <- ggplot(res_long, aes(x = cs_internal, y = cs_true)) +
-#   geom_jitter(width = 0.5, height = 0.5, alpha = 0.5) +
-#   facet_wrap(~ method, scales = "free_x") +
-#   theme_minimal() +
-#   labs(
-#     title = "Calibration slope correlation (internal vs external 'true')",
-#     subtitle = paste0(
-#       "Sample size = ", sample_size,
-#       ". Sims = ", nsim,
-#       ". cor(boot)=", round(cors["boot"], 3),
-#       ", cor(split)=", round(cors["split"], 3),
-#       ", cor(cv)=", round(cors["cv"], 3)
-#     ),
-#     x = "Internal calibration slope estimate",
-#     y = "External 'true' calibration slope"
-#   )
-
-# print(plt)
+print("All plots saved.")

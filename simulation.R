@@ -189,56 +189,104 @@ metrics <- c("cs", "auc", "brier", "mape")
 metric_labels <- c(cs = "Calibration Slope", auc = "AUC", brier = "Brier Score", mape = "MAPE")
 
 for (m in metrics) {
-  # Scatter Plot
-  res_m_long <- res %>%
+  # Prepare data for plotting
+  res_m <- res %>%
     select(n, starts_with(m)) %>%
     rename_with(~str_remove(., paste0(m, "_")), starts_with(m)) %>%
-    pivot_longer(cols = c(boot, split, cv), names_to = "method", values_to = "internal")
+    mutate(
+      n_label = paste0("Sample Size: ", n),
+      n_label = factor(n_label, levels = paste0("Sample Size: ", sort(unique(n))))
+    )
+
+  # Scatter Plot
+  res_m_long <- res_m %>%
+    pivot_longer(cols = c(boot, split, cv), names_to = "method", values_to = "internal") %>%
+    mutate(method = case_when(
+      method == "boot"  ~ "Bootstrap",
+      method == "cv"    ~ "10-fold CV",
+      method == "split" ~ "Sample Split"
+    ))
     
   cors_m <- res_m_long %>%
-    group_by(n, method) %>%
+    group_by(n_label, method) %>%
     summarise(cor_val = cor(internal, true, method = "spearman"), .groups = "drop")
     
   scatter <- ggplot(res_m_long, aes(x = internal, y = true, color = method)) +
-    geom_point(alpha = 0.6) +
-    facet_wrap(~ n + method, scales = "free") +
-    theme_minimal() +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey70") +
+    geom_point(alpha = 0.5, size = 1) +
+    facet_grid(n_label ~ method, scales = "free") +
+    scale_color_brewer(palette = "Set1") +
+    theme_bw(base_size = 12) +
+    theme(
+      legend.position = "none",
+      strip.background = element_rect(fill = "grey95"),
+      panel.grid.minor = element_blank()
+    ) +
     geom_text(
       data = cors_m,
       aes(x = -Inf, y = Inf, label = paste0("r = ", round(cor_val, 3))),
-      hjust = -0.1, vjust = 1.2, inherit.aes = FALSE, size = 4
+      hjust = -0.2, vjust = 1.5, inherit.aes = FALSE, size = 3.5, fontface = "italic"
     ) +
     labs(
-      title = paste0(metric_labels[m], " correlation (internal vs external 'true')"),
-      subtitle = paste0("Sims = ", nsim),
-      x = paste0("Internal ", metric_labels[m], " estimate"),
-      y = paste0("External 'true' ", metric_labels[m])
+      title = paste0(metric_labels[m], " Correlation: Internal vs. External 'True'"),
+      subtitle = paste0("N_sims = ", nsim, " | Dashed line represents perfect agreement"),
+      x = paste0("Internal ", metric_labels[m], " Estimate"),
+      y = paste0("External 'True' ", metric_labels[m])
     )
     
-  ggsave(paste0("scatter_", m, ".png"), scatter, width = 10, height = 8)
+  ggsave(paste0("scatter_", m, ".png"), scatter, width = 11, height = 9)
   
   # Box Plot
-  res_m_box <- res %>%
-    select(n, starts_with(m)) %>%
-    rename_with(~str_remove(., paste0(m, "_")), starts_with(m)) %>%
-    pivot_longer(cols = -n, names_to = "method", values_to = "val")
+  res_m_box <- res_m %>%
+    pivot_longer(cols = c(true, boot, split, cv), names_to = "method", values_to = "val") %>%
+    mutate(method = case_when(
+      method == "true"  ~ "True (Ext)",
+      method == "boot"  ~ "Bootstrap",
+      method == "cv"    ~ "10-fold CV",
+      method == "split" ~ "Sample Split"
+    ),
+    method = factor(method, levels = c("True (Ext)", "Bootstrap", "10-fold CV", "Sample Split")))
     
   box <- ggplot(res_m_box, aes(x = method, y = val, fill = method)) +
-    geom_boxplot(alpha = 0.7) +
-    theme_minimal() + 
-    facet_wrap(~n) +
-    labs(
-      title = paste0("Comparison of ", metric_labels[m]),
-      x = "",
-      y = metric_labels[m]
+    geom_jitter(width = 0.2, alpha = 0.1, color = "grey30") +
+    geom_boxplot(alpha = 0.8, outlier.shape = NA) +
+    facet_wrap(~ n_label) +
+    scale_fill_brewer(palette = "Pastel1") +
+    theme_bw(base_size = 12) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      strip.background = element_rect(fill = "grey95")
     ) +
-    theme(legend.position = "none")
+    labs(
+      title = paste0("Comparison of ", metric_labels[m], " Estimates"),
+      subtitle = paste0("Distribution across ", nsim, " simulations"),
+      x = "Validation Method",
+      y = metric_labels[m]
+    )
     
   # Add horizontal line for reference if applicable
-  if (m == "cs") box <- box + geom_hline(yintercept = 0.9, color = "blue", linetype = "dotted")
-  if (m == "auc") box <- box + geom_hline(yintercept = auc_val, color = "blue", linetype = "dotted")
+  #if (m == "cs") box <- box + geom_hline(yintercept = 0.9, color = "#e74c3c", linetype = "dashed")
+  #if (m == "auc") box <- box + geom_hline(yintercept = auc_val, color = "#e74c3c", linetype = "dashed")
   
-  ggsave(paste0("box_", m, ".png"), box, width = 10, height = 8)
+  ggsave(paste0("box_", m, ".png"), box, width = 10, height = 7)
 }
 
+# Save raw results
+write.csv(res, "simulation_results.csv", row.names = FALSE)
+
+# Generate and save summary statistics for supervisors
+summary_stats <- res %>%
+  group_by(n) %>%
+  summarise(across(everything(), list(mean = mean, sd = sd), .names = "{col}_{fn}")) %>%
+  pivot_longer(
+    cols = -n,
+    names_to = c("metric", "stat"),
+    names_pattern = "(.*)_(mean|sd)"
+  ) %>%
+  pivot_wider(names_from = stat, values_from = value)
+
+write.csv(summary_stats, "summary_statistics.csv", row.names = FALSE)
+
+print("Simulation results and summary statistics saved.")
 print("All plots saved.")
